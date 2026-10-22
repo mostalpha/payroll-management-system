@@ -24,10 +24,25 @@ const formatCurrency = (value) => {
   }).format(number);
 };
 
+const calculateGrossPay = (employee) => {
+  return (
+    Number(employee.basicSalary || 0) +
+    Number(employee.allowances || 0) +
+    Number(employee.overtimeHours || 0) * Number(employee.overtimeRate || 0)
+  );
+};
+
+const calculateNetPay = (employee) => {
+  return calculateGrossPay(employee) - Number(employee.deductions || 0);
+};
+
 function App() {
   const [formData, setFormData] = useState(emptyForm());
   const [payrollList, setPayrollList] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState('');
 
   useEffect(() => {
     const saved = localStorage.getItem('payroll-data');
@@ -40,63 +55,83 @@ function App() {
     localStorage.setItem('payroll-data', JSON.stringify(payrollList));
   }, [payrollList]);
 
+  const filteredPayrollList = useMemo(() => {
+    return payrollList.filter((employee) => {
+      const matchesSearch =
+        !searchTerm ||
+        employee.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        employee.employeeId.toLowerCase().includes(searchTerm.toLowerCase());
+
+      const matchesMonth = !selectedMonth || employee.month === selectedMonth;
+      return matchesSearch && matchesMonth;
+    });
+  }, [payrollList, searchTerm, selectedMonth]);
+
   const totalGross = useMemo(
-    () =>
-      payrollList.reduce((sum, employee) => {
-        const gross =
-          Number(employee.basicSalary || 0) +
-          Number(employee.allowances || 0) +
-          Number(employee.overtimeHours || 0) * Number(employee.overtimeRate || 0);
-        return sum + gross;
-      }, 0),
+    () => payrollList.reduce((sum, employee) => sum + calculateGrossPay(employee), 0),
+    [payrollList]
+  );
+
+  const totalDeductions = useMemo(
+    () => payrollList.reduce((sum, employee) => sum + Number(employee.deductions || 0), 0),
     [payrollList]
   );
 
   const totalNet = useMemo(
-    () =>
-      payrollList.reduce((sum, employee) => {
-        const overtimePay = Number(employee.overtimeHours || 0) * Number(employee.overtimeRate || 0);
-        const net =
-          Number(employee.basicSalary || 0) +
-          Number(employee.allowances || 0) +
-          overtimePay -
-          Number(employee.deductions || 0);
-        return sum + net;
-      }, 0),
+    () => payrollList.reduce((sum, employee) => sum + calculateNetPay(employee), 0),
     [payrollList]
   );
+
+  const averageNet = useMemo(() => {
+    if (payrollList.length === 0) return 0;
+    return totalNet / payrollList.length;
+  }, [payrollList, totalNet]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
+    setErrors((prev) => ({ ...prev, [name]: '' }));
   };
 
-  const calculateNetPay = (employee) => {
-    const overtimePay = Number(employee.overtimeHours || 0) * Number(employee.overtimeRate || 0);
-    return (
-      Number(employee.basicSalary || 0) +
-      Number(employee.allowances || 0) +
-      overtimePay -
-      Number(employee.deductions || 0)
-    );
+  const validateForm = () => {
+    const nextErrors = {};
+
+    if (!formData.employeeName.trim()) nextErrors.employeeName = 'Employee name is required.';
+    if (!formData.employeeId.trim()) nextErrors.employeeId = 'Employee ID is required.';
+    if (!formData.month) nextErrors.month = 'Payroll month is required.';
+
+    if (Number(formData.basicSalary || 0) < 0) nextErrors.basicSalary = 'Basic salary cannot be negative.';
+    if (Number(formData.overtimeHours || 0) < 0) nextErrors.overtimeHours = 'Overtime hours cannot be negative.';
+    if (Number(formData.overtimeRate || 0) < 0) nextErrors.overtimeRate = 'Overtime rate cannot be negative.';
+    if (Number(formData.allowances || 0) < 0) nextErrors.allowances = 'Allowances cannot be negative.';
+    if (Number(formData.deductions || 0) < 0) nextErrors.deductions = 'Deductions cannot be negative.';
+
+    if (Number(formData.basicSalary || 0) === 0 && !formData.employeeName.trim()) {
+      nextErrors.basicSalary = 'Basic salary is required.';
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
   };
 
   const handleSubmit = (event) => {
     event.preventDefault();
 
+    if (!validateForm()) {
+      return;
+    }
+
     const cleanedData = {
       ...formData,
+      employeeName: formData.employeeName.trim(),
+      employeeId: formData.employeeId.trim(),
+      department: formData.department.trim(),
       basicSalary: Number(formData.basicSalary || 0),
       overtimeHours: Number(formData.overtimeHours || 0),
       overtimeRate: Number(formData.overtimeRate || 0),
       allowances: Number(formData.allowances || 0),
       deductions: Number(formData.deductions || 0)
     };
-
-    if (!cleanedData.employeeName || !cleanedData.employeeId || !cleanedData.month) {
-      alert('Please fill in employee name, employee ID, and payroll month.');
-      return;
-    }
 
     if (isEditing && cleanedData.id) {
       setPayrollList((prev) =>
@@ -112,15 +147,25 @@ function App() {
 
     setFormData(emptyForm());
     setIsEditing(false);
+    setErrors({});
   };
 
   const handleEdit = (employee) => {
     setFormData(employee);
     setIsEditing(true);
+    setErrors({});
   };
 
   const handleDelete = (id) => {
+    const record = payrollList.find((employee) => employee.id === id);
+    const confirmDelete = window.confirm(
+      `Delete payroll for ${record?.employeeName || 'this employee'}?`
+    );
+
+    if (!confirmDelete) return;
+
     setPayrollList((prev) => prev.filter((employee) => employee.id !== id));
+
     if (isEditing) {
       setFormData(emptyForm());
       setIsEditing(false);
@@ -143,10 +188,25 @@ function App() {
       'Overtime Rate': employee.overtimeRate,
       'Allowances': employee.allowances,
       'Deductions': employee.deductions,
+      'Gross Pay': calculateGrossPay(employee),
       'Net Pay': calculateNetPay(employee)
     }));
 
-    const worksheet = XLSX.utils.json_to_sheet(exportRows);
+    const totalsRow = {
+      'Employee Name': 'TOTAL',
+      'Employee ID': '',
+      'Department': '',
+      'Month': '',
+      'Basic Salary': totalGross,
+      'Overtime Hours': '',
+      'Overtime Rate': '',
+      'Allowances': '',
+      'Deductions': totalDeductions,
+      'Gross Pay': totalGross,
+      'Net Pay': totalNet
+    };
+
+    const worksheet = XLSX.utils.json_to_sheet([...exportRows, totalsRow]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Payroll');
     XLSX.writeFile(workbook, 'payroll-export.xlsx');
@@ -174,8 +234,16 @@ function App() {
           <strong>{formatCurrency(totalGross)}</strong>
         </div>
         <div className="summary-card">
+          <span>Total Deductions</span>
+          <strong>{formatCurrency(totalDeductions)}</strong>
+        </div>
+        <div className="summary-card">
           <span>Total Net</span>
           <strong>{formatCurrency(totalNet)}</strong>
+        </div>
+        <div className="summary-card">
+          <span>Average Net</span>
+          <strong>{formatCurrency(averageNet)}</strong>
         </div>
       </section>
 
@@ -183,7 +251,7 @@ function App() {
         <section className="panel form-panel">
           <h2>{isEditing ? 'Edit Payroll Entry' : 'Add Payroll Entry'}</h2>
 
-          <form onSubmit={handleSubmit} className="payroll-form">
+          <form onSubmit={handleSubmit} className="payroll-form" noValidate>
             <div className="field-row two-col">
               <label>
                 Employee Name
@@ -193,7 +261,9 @@ function App() {
                   value={formData.employeeName}
                   onChange={handleChange}
                   placeholder="e.g. Ada Johnson"
+                  className={errors.employeeName ? 'input-error' : ''}
                 />
+                {errors.employeeName && <span className="error-text">{errors.employeeName}</span>}
               </label>
 
               <label>
@@ -204,7 +274,9 @@ function App() {
                   value={formData.employeeId}
                   onChange={handleChange}
                   placeholder="e.g. EMP-001"
+                  className={errors.employeeId ? 'input-error' : ''}
                 />
+                {errors.employeeId && <span className="error-text">{errors.employeeId}</span>}
               </label>
             </div>
 
@@ -227,7 +299,9 @@ function App() {
                   name="month"
                   value={formData.month}
                   onChange={handleChange}
+                  className={errors.month ? 'input-error' : ''}
                 />
+                {errors.month && <span className="error-text">{errors.month}</span>}
               </label>
             </div>
 
@@ -241,7 +315,9 @@ function App() {
                   onChange={handleChange}
                   min="0"
                   step="0.01"
+                  className={errors.basicSalary ? 'input-error' : ''}
                 />
+                {errors.basicSalary && <span className="error-text">{errors.basicSalary}</span>}
               </label>
 
               <label>
@@ -253,7 +329,9 @@ function App() {
                   onChange={handleChange}
                   min="0"
                   step="0.5"
+                  className={errors.overtimeHours ? 'input-error' : ''}
                 />
+                {errors.overtimeHours && <span className="error-text">{errors.overtimeHours}</span>}
               </label>
             </div>
 
@@ -267,7 +345,9 @@ function App() {
                   onChange={handleChange}
                   min="0"
                   step="0.01"
+                  className={errors.overtimeRate ? 'input-error' : ''}
                 />
+                {errors.overtimeRate && <span className="error-text">{errors.overtimeRate}</span>}
               </label>
 
               <label>
@@ -279,7 +359,9 @@ function App() {
                   onChange={handleChange}
                   min="0"
                   step="0.01"
+                  className={errors.allowances ? 'input-error' : ''}
                 />
+                {errors.allowances && <span className="error-text">{errors.allowances}</span>}
               </label>
             </div>
 
@@ -293,7 +375,9 @@ function App() {
                   onChange={handleChange}
                   min="0"
                   step="0.01"
+                  className={errors.deductions ? 'input-error' : ''}
                 />
+                {errors.deductions && <span className="error-text">{errors.deductions}</span>}
               </label>
             </div>
 
@@ -308,6 +392,7 @@ function App() {
                   onClick={() => {
                     setFormData(emptyForm());
                     setIsEditing(false);
+                    setErrors({});
                   }}
                 >
                   Cancel
@@ -318,10 +403,25 @@ function App() {
         </section>
 
         <section className="panel table-panel">
-          <h2>Payroll Records</h2>
+          <div className="table-header">
+            <h2>Payroll Records</h2>
+            <div className="filters">
+              <input
+                type="text"
+                placeholder="Search by name or ID"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+              />
+              <input
+                type="month"
+                value={selectedMonth}
+                onChange={(event) => setSelectedMonth(event.target.value)}
+              />
+            </div>
+          </div>
 
-          {payrollList.length === 0 ? (
-            <div className="empty-state">No payroll entries yet.</div>
+          {filteredPayrollList.length === 0 ? (
+            <div className="empty-state">No payroll entries match your search.</div>
           ) : (
             <div className="table-wrap">
               <table>
@@ -330,16 +430,18 @@ function App() {
                     <th>Name</th>
                     <th>ID</th>
                     <th>Month</th>
+                    <th>Gross</th>
                     <th>Net Pay</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {payrollList.map((employee) => (
+                  {filteredPayrollList.map((employee) => (
                     <tr key={employee.id}>
                       <td>{employee.employeeName}</td>
                       <td>{employee.employeeId}</td>
                       <td>{employee.month}</td>
+                      <td>{formatCurrency(calculateGrossPay(employee))}</td>
                       <td>{formatCurrency(calculateNetPay(employee))}</td>
                       <td className="actions">
                         <button type="button" className="mini-btn edit" onClick={() => handleEdit(employee)}>
